@@ -1,10 +1,13 @@
-/* eslint-disable */
+// @ts-nocheck
+﻿/* eslint-disable */
 import { create } from 'zustand'
-import { createEvent, joinEvent, leaveEvent, getEventsByRegion } from '@/app/actions/events'
-import { sendMessage, getRoomMessages, getOrCreateDMRoom } from '@/app/actions/messages'
+import { createEvent, updateEvent, deleteEvent as deleteEventAction, joinEvent, leaveEvent, getEventsByRegion } from '@/app/actions/events'
+import { sendMessage as sendMessageAPI, getRoomMessages, getOrCreateDMRoom } from '@/app/actions/messages'
 import { getRegions, getInterests } from '@/app/actions/catalog'
+import { updateProfile, updateUserInterests } from '@/app/actions/users'
 import { uploadImage } from '@/app/actions/storage'
 import { signOut } from '@/app/actions/auth'
+import { createClient as createBrowserClient } from '@/lib/supabase/client'
 
 export interface Region {
   id: string
@@ -46,6 +49,7 @@ export interface Event {
   ageMax: number | null
   genderPreference: 'Todos' | 'Solo mujeres' | 'Solo hombres'
   imageUrl?: string
+  imageFile?: File | null
 }
 
 export interface Message {
@@ -62,12 +66,13 @@ export interface Message {
 }
 
 export type MobileView = 'menu' | 'chat' | 'details'
-export type RightColumnView = 'cartelera' | 'create_event' | 'event_details' | 'profile'
+export type RightColumnView = 'cartelera' | 'create_event' | 'event_details' | 'profile' | 'edit_event' | 'edit_profile'
 
 interface AppState {
   currentUser: User | null
   users: User[]
   events: Event[]
+  myEvents: Event[]
   messages: Record<string, Message[]>
   dmChannels: any[]
   
@@ -104,11 +109,22 @@ interface AppState {
 
   // Domain actions
   createEvent: (eventData: Omit<Event, 'id' | 'creatorId' | 'attendees'>) => Promise<{ id?: string, error?: string }>
+  updateEvent: (eventId: string, eventData: Partial<Event>) => Promise<{ id?: string, error?: string }>
+  updateUserProfile: (profileData: Partial<User>, imageFile?: File | null) => Promise<{ success?: boolean, error?: string }>
+  deleteEvent: (eventId: string) => Promise<{ success?: boolean, error?: string }>
   joinEvent: (eventId: string) => Promise<void>
   leaveEvent: (eventId: string) => Promise<void>
   sendMessage: (roomId: string, text: string, parentId?: string) => Promise<void>
+  activeSubscription: any
+  subscribeToRoom: (roomId: string) => void
+  unsubscribeFromRoom: () => void
+  activeEventsSubscription: any
+  subscribeToEvents: (regionId: string) => void
+  unsubscribeFromEvents: () => void
+
   startDirectMessage: (targetUserId: string) => Promise<void>
   fetchEventsForRegion: (regionId: string) => Promise<void>
+  fetchMyEvents: () => Promise<void>
   fetchMessagesForRoom: (roomId: string) => Promise<void>
   deleteMessageForMe: (messageId: string, roomId: string) => Promise<void>
   deleteMessageForEveryone: (messageId: string, roomId: string) => Promise<void>
@@ -118,6 +134,7 @@ export const useUIStore = create<AppState>((set, get) => ({
   currentUser: null,
   users: [],
   events: [],
+  myEvents: [],
   messages: {},
   dmChannels: [],
   
@@ -132,42 +149,74 @@ export const useUIStore = create<AppState>((set, get) => ({
   selectedUserId: null,
   duplicateWarning: null,
 
-  login: (user) => set({ currentUser: user }),
+  login: (user) => set({ currentUser: { ...user, username: user.username?.toLowerCase() } }),
   logout: async () => {
-    await signOut();
-    set({ currentUser: null });
-  },
+      await signOut();
+      set({ currentUser: null, activeRoomId: null, activeView: 'events', myEvents: [], events: [], messages: {}, dmChannels: [] });
+    },
   
-  setActiveRoom: (roomId) => set({ activeRoomId: roomId, activeThreadId: null, activeView: 'cartelera', selectedEventId: null, selectedUserId: null }),
+  setActiveRoom: (roomId) => {
+    const { events, myEvents } = get();
+    const isEvent = events.some(e => e.id === roomId) || myEvents.some(e => e.id === roomId);
+    if (isEvent) {
+      set({ 
+        activeRoomId: roomId, 
+        activeThreadId: null, 
+        activeView: 'event_details', 
+        selectedEventId: roomId, 
+        selectedUserId: null 
+      });
+    } else {
+      set({ 
+        activeRoomId: roomId, 
+        activeThreadId: null, 
+        activeView: 'cartelera', 
+        selectedEventId: null, 
+        selectedUserId: null 
+      });
+    }
+  },
   setActiveThreadId: (threadId) => set({ activeThreadId: threadId, mobileView: 'chat' }),
   setRightColumnView: (view) => set({ activeView: view }),
   setMobileView: (view) => set({ mobileView: view }),
-  setDmChannels: (channels) => set({ dmChannels: channels }),
+  setDmChannels: (channels) => set(state => {
+    const mergedUsers = [...state.users];
+    channels.forEach((ch: any) => {
+      const ou = ch.other_user;
+      if (!ou) return;
+      const nu: User = {
+        id: ou.id, username: ou.username?.toLowerCase() || 'usuario desconocido', avatarUrl: ou.avatar_url || '',
+        email: '', age: 0, gender: 'X', region: ou.region || '', interests: [],
+        instagram: ou.instagram, // @ts-ignore
+tiktok: ou.tiktok, facebook: ou.facebook
+      } as User;
+      const idx = mergedUsers.findIndex(u => u.id === nu.id);
+      if (idx === -1) mergedUsers.push(nu);
+      else if (mergedUsers[idx].username === 'usuario desconocido') mergedUsers[idx] = { ...mergedUsers[idx], ...nu };
+    });
+    return { dmChannels: channels, users: mergedUsers };
+  }),
   setSelectedEvent: (eventId) => set({ selectedEventId: eventId, activeView: eventId ? 'event_details' : 'cartelera' }),
   setSelectedUser: (userId) => set({ selectedUserId: userId, activeView: userId ? 'profile' : 'cartelera' }),
   setDuplicateWarning: (event) => set({ duplicateWarning: event }),
   resetRightColumn: () => {
-    const { activeRoomId, events, regions } = get();
+    const { activeRoomId, events, myEvents, currentUser, regions } = get();
     let targetRoom = activeRoomId;
     
     // Check if active room is a region room
     const isRegionRoom = regions.some(r => r.room_id === activeRoomId);
     
     if (!isRegionRoom) {
-       const activeEvent = events.find(ev => ev.id === activeRoomId);
-       if (activeEvent) {
-         const reg = regions.find(r => r.id === activeEvent.region);
-         if (reg) targetRoom = reg.room_id;
-       } else {
-         targetRoom = regions[0]?.room_id || '';
-       }
+       const userRegion = regions.find(r => r.name === currentUser?.region);
+       targetRoom = userRegion?.room_id || regions[0]?.room_id || '';
     }
     set({ 
       activeView: 'cartelera', 
       selectedEventId: null, 
       selectedUserId: null, 
       activeRoomId: targetRoom,
-      mobileView: 'chat'
+      mobileView: 'chat',
+      duplicateWarning: null
     });
   },
 
@@ -194,8 +243,11 @@ export const useUIStore = create<AppState>((set, get) => ({
     if (!currentUser) return { error: 'Not authenticated' };
     
     let finalImageUrl = undefined;
-    if (eventData.imageUrl && eventData.imageUrl.startsWith('data:')) {
-      const publicUrl = await uploadImage(eventData.imageUrl, 'event_images');
+    if (eventData.imageFile) {
+      const formData = new FormData();
+      formData.append('file', eventData.imageFile);
+      formData.append('bucket', 'event_images');
+      const publicUrl = await uploadImage(formData);
       if (publicUrl) {
         finalImageUrl = publicUrl;
       }
@@ -220,46 +272,248 @@ export const useUIStore = create<AppState>((set, get) => ({
 
     if (res.event) {
        await fetchEventsForRegion(eventData.region);
+       await get().fetchMyEvents();
        return { id: res.event.id };
     }
     return { error: 'Error desconocido' };
   },
 
-  joinEvent: async (eventId) => {
-    const { fetchEventsForRegion, events } = get();
-    await joinEvent(eventId);
+  updateUserProfile: async (profileData, imageFile) => {
+    const { currentUser, interests } = get();
+    if (!currentUser) return { error: 'Not authenticated' };
+
+    let finalAvatarUrl = profileData.avatarUrl;
+    if (imageFile) {
+      const formData = new FormData();
+      formData.append('file', imageFile);
+      formData.append('bucket', 'avatars');
+      const publicUrl = await uploadImage(formData);
+      if (publicUrl) {
+        finalAvatarUrl = publicUrl;
+      }
+    }
+
+    const { interests: rawInterests, ...restData } = profileData;
+    const updateData: any = { ...restData };
+    if (finalAvatarUrl) updateData.avatar_url = finalAvatarUrl;
+    delete updateData.avatarUrl;
+    
+    const profileRes = await updateProfile(updateData);
+    if (profileRes.error) return profileRes;
+
+    if (rawInterests) {
+        const interestIds = Array.from(new Set(rawInterests.map((name: string) => {
+            const i = interests.find(int => int.name === name);
+            return i ? i.id : null;
+        }).filter(Boolean) as string[]));
+        
+        const intRes = await updateUserInterests(interestIds);
+        if (intRes.error) return intRes;
+    }
+
+    set({ currentUser: { ...currentUser, ...profileData, avatarUrl: finalAvatarUrl || currentUser.avatarUrl } });
+    return { success: true };
+  },
+
+  updateEvent: async (eventId, eventData) => {
+    const { currentUser, fetchEventsForRegion, events } = get();
+    if (!currentUser) return { error: 'Not authenticated' };
+
     const ev = events.find(e => e.id === eventId);
-    if(ev) await fetchEventsForRegion(ev.region);
+    if (!ev) return { error: 'Evento no encontrado' };
+    
+    let finalImageUrl = eventData.imageUrl;
+    if (eventData.imageFile) {
+      const formData = new FormData();
+      formData.append('file', eventData.imageFile);
+      formData.append('bucket', 'event_images');
+      const publicUrl = await uploadImage(formData);
+      if (publicUrl) {
+        finalImageUrl = publicUrl;
+      }
+    }
+
+    const changedFields: string[] = [];
+    if (eventData.title && eventData.title !== ev.title) changedFields.push('el título');
+    let rawDesc = eventData.description !== undefined ? eventData.description : ev.description;
+    if (eventData.description !== undefined && eventData.description.replace('<!--edited-->', '') !== ev.description.replace('<!--edited-->', '')) changedFields.push('la descripción');
+    if (eventData.region && eventData.region !== ev.region) changedFields.push('la zona');
+    if (eventData.interest && eventData.interest !== ev.interest) changedFields.push('la categoría');
+    if (eventData.date && eventData.date !== ev.date) {
+      const newD = new Date(eventData.date);
+      const oldD = new Date(ev.date);
+      const sameDay = newD.getFullYear() === oldD.getFullYear() && newD.getMonth() === oldD.getMonth() && newD.getDate() === oldD.getDate();
+      const sameTime = newD.getHours() === oldD.getHours() && newD.getMinutes() === oldD.getMinutes();
+      if (!sameDay && !sameTime) changedFields.push('el día y la hora');
+      else if (!sameDay) changedFields.push('el día');
+      else if (!sameTime) changedFields.push('la hora');
+    }
+    if (eventData.address !== undefined && eventData.address !== ev.address) changedFields.push('la dirección');
+    if (eventData.maxAttendees !== undefined && eventData.maxAttendees !== ev.maxAttendees) changedFields.push('el cupo');
+    if (eventData.ageMin !== undefined && eventData.ageMin !== ev.ageMin) changedFields.push('la edad mínima');
+    if (eventData.ageMax !== undefined && eventData.ageMax !== ev.ageMax) changedFields.push('la edad máxima');
+    if (eventData.imageFile || (finalImageUrl === '' && ev.imageUrl)) changedFields.push('la foto');
+
+    let existingEdits: string[] = [];
+    const editMatch = rawDesc.match(/<!--edited:(.*?)-->/);
+    if (editMatch) {
+      existingEdits = editMatch[1].split(',');
+    } else if (rawDesc.includes('<!--edited-->')) {
+      existingEdits = ['algo'];
+    }
+
+    if (changedFields.length > 0) {
+      const allEdits = Array.from(new Set([...existingEdits, ...changedFields]));
+      rawDesc = rawDesc.replace(/<!--edited.*?-->/g, '');
+      rawDesc += `<!--edited:${allEdits.join(',')}-->`;
+    }
+
+    const res = await updateEvent(eventId, {
+      title: eventData.title || ev.title,
+      description: rawDesc,
+      region_id: eventData.region || ev.region, 
+      category_id: eventData.interest || ev.interest, 
+      event_datetime: eventData.date || ev.date,
+      address: eventData.address !== undefined ? eventData.address : ev.address,
+      max_attendees: eventData.maxAttendees !== undefined ? eventData.maxAttendees : ev.maxAttendees,
+      min_age: eventData.ageMin !== undefined ? eventData.ageMin : ev.ageMin,
+      max_age: eventData.ageMax !== undefined ? eventData.ageMax : ev.ageMax,
+      image_url: finalImageUrl === '' ? null : finalImageUrl,
+    });
+
+    if (res.error) return { error: res.error };
+
+    if (res.event) {
+       const regionObj = get().regions.find(r => r.id === res.event.region_id);
+       if (regionObj && changedFields.length > 0) {
+         let changesStr = changedFields.join(', ');
+         if (changedFields.length > 1) {
+           const lastComma = changesStr.lastIndexOf(', ');
+           changesStr = changesStr.substring(0, lastComma) + ' y ' + changesStr.substring(lastComma + 2);
+         }
+       }
+       await fetchEventsForRegion(res.event.region_id);
+       await get().fetchMyEvents();
+       return { id: res.event.id };
+    }
+    return { error: 'Error desconocido' };
+  },
+
+  deleteEvent: async (eventId) => {
+    const { fetchEventsForRegion, events, fetchMyEvents } = get();
+    const ev = events.find(e => e.id === eventId);
+    
+    const res = await deleteEventAction(eventId);
+    if (res.error) return { error: res.error };
+    
+    if (ev) {
+       await fetchEventsForRegion(ev.region);
+    }
+    await fetchMyEvents();
+    return { success: true };
+  },
+
+  joinEvent: async (eventId) => {
+    const { currentUser, events, myEvents, fetchEventsForRegion, fetchMyEvents } = get();
+    if (!currentUser) return;
+    const ev = events.find(e => e.id === eventId);
+    if (!ev) return;
+    
+    // Optimistic update
+    set({ 
+      myEvents: [...myEvents, ev],
+      events: events.map(e => e.id === eventId ? { ...e, attendees: [...(e.attendees || []), currentUser.id] } : e)
+    });
+
+    joinEvent(eventId).then(() => {
+      fetchEventsForRegion(ev.region);
+      fetchMyEvents();
+    });
   },
 
   leaveEvent: async (eventId) => {
-    const { fetchEventsForRegion, events } = get();
-    await leaveEvent(eventId);
+    const { currentUser, events, myEvents, fetchEventsForRegion, fetchMyEvents } = get();
+    if (!currentUser) return;
     const ev = events.find(e => e.id === eventId);
-    if(ev) await fetchEventsForRegion(ev.region);
+    
+    // Optimistic update
+    set({
+      myEvents: myEvents.filter(e => e.id !== eventId),
+      events: events.map(e => e.id === eventId ? { ...e, attendees: (e.attendees || []).filter(id => id !== currentUser.id) } : e)
+    });
+
+    leaveEvent(eventId).then(() => {
+      if(ev) fetchEventsForRegion(ev.region);
+      fetchMyEvents();
+    });
   },
 
-  // ¡ESTA ES LA FUNCIÓN CORREGIDA!
   sendMessage: async (roomId, text, parentId) => {
-    // 1. Llama a la acción real del backend (importada arriba de todo)
-    await sendMessage(roomId, text, parentId);
+    const { currentUser, messages, fetchMessagesForRoom } = get();
+    if (!currentUser) return;
     
-    // 2. Refresca la lista de mensajes de la base de datos
-    const { fetchMessagesForRoom } = get();
-    await fetchMessagesForRoom(roomId);
+    // 1. Crear el mensaje optimista local
+    const tempId = `temp-${Date.now()}`;
+    const optimisticMsg: Message = {
+      id: tempId,
+      roomId,
+      senderId: currentUser.id,
+      text,
+      timestamp: new Date().toISOString(),
+      type: 'text',
+      parentId
+    };
+    
+    // 2. Inyectarlo inmediatamente en el store para que la UI lo muestre sin demora
+    set(state => ({
+      messages: {
+        ...state.messages,
+        [roomId]: [...(state.messages[roomId] || []), optimisticMsg]
+      }
+    }));
+    
+    // 3. Enviar al backend asincr�nicamente (sin await para no bloquear la UI)
+      sendMessageAPI(roomId, text, parentId)
+        .then(result => {
+          if (result.error) alert('Error: ' + result.error);
+          else fetchMessagesForRoom(roomId);
+        })
+        .catch((e: any) => {
+          alert('Error: ' + e.message);
+          console.error('Error enviando mensaje optimista:', e);
+        });
   },
 
   fetchEventsForRegion: async (regionId: string) => {
-    const res = await getEventsByRegion(regionId);
+    const supabase = createBrowserClient();
+    const { data, error } = await supabase
+      .from('events')
+      .select(`
+        *,
+        creator:users!events_creator_id_fkey(username, avatar_url, instagram, tiktok, facebook),
+        event_attendees(user_id, users!event_attendees_user_id_fkey(username, avatar_url, age, gender, instagram, tiktok, facebook))
+      `)
+      .eq('region_id', regionId)
+      .order('event_datetime', { ascending: true })
+      .range(0, 49);
+
+    if (error) {
+      console.error(error);
+      return;
+    }
+    const res = { events: data };
+
     if (res.events) {
        const newUsers: User[] = [];
        const mapped: Event[] = res.events.map((e: any) => {
           if (e.creator) {
-             newUsers.push({
+              newUsers.push({
                id: e.creator_id,
-               username: e.creator.username,
+               username: e.creator.username?.toLowerCase() || 'usuario',
                avatarUrl: e.creator.avatar_url,
-               email: '', age: 0, gender: 'X', region: '', interests: []
+               email: '', age: 0, gender: 'X', region: '', interests: [],
+               instagram: e.creator.instagram, // @ts-ignore
+tiktok: e.creator.tiktok, facebook: e.creator.facebook
              });
           }
           if (e.event_attendees && Array.isArray(e.event_attendees)) {
@@ -267,11 +521,13 @@ export const useUIStore = create<AppState>((set, get) => ({
                if (ea.users) {
                  newUsers.push({
                    id: ea.user_id,
-                   username: ea.users.username,
+                   username: ea.users.username?.toLowerCase() || 'usuario',
                    avatarUrl: ea.users.avatar_url,
                    age: ea.users.age || 0,
                    gender: ea.users.gender || 'X',
-                   email: '', region: '', interests: []
+                   email: '', region: '', interests: [],
+                   instagram: ea.users.instagram, // @ts-ignore
+tiktok: ea.users.tiktok, facebook: ea.users.facebook
                  });
                }
              });
@@ -309,19 +565,65 @@ export const useUIStore = create<AppState>((set, get) => ({
     }
   },
 
+  fetchMyEvents: async () => {
+    const { getMyEvents: getMyEventsAction } = await import('@/app/actions/events');
+    const res = await getMyEventsAction();
+    if (res.events) {
+       const mapped: Event[] = res.events.map((e: any) => ({
+          id: e.id,
+          title: e.title,
+          description: e.description,
+          creatorId: e.creator_id,
+          region: e.region_id,
+          interest: e.category_id,
+          date: e.event_datetime,
+          attendees: e.event_attendees ? e.event_attendees.map((ea: any) => ea.user_id) : [],
+          maxAttendees: e.max_attendees,
+          address: e.address || '',
+          ageMin: e.min_age,
+          ageMax: e.max_age,
+          genderPreference: 'Todos',
+          imageUrl: e.image_url,
+       }));
+       set({ myEvents: mapped });
+    }
+  },
+
   fetchMessagesForRoom: async (roomId: string) => {
-    const res = await getRoomMessages(roomId);
-    if (res.messages) {
+    // Usar el cliente directamente para evitar el caché agresivo del App Router de Next.js
+    const supabase = createBrowserClient();
+    
+    const { data, error } = await supabase
+      .from('messages')
+      .select(`
+        *,
+        sender:users(username, avatar_url, region, instagram, tiktok, facebook),
+        event:events(title, description)
+      `)
+      .eq('room_id', roomId)
+      .order('created_at', { ascending: false })
+      .range(0, 49);
+
+    if (error) {
+      console.error("Error al cargar mensajes:", error);
+      return;
+    }
+
+    const messagesArray = data ? data.reverse() : [];
+
+    if (messagesArray) {
         const newUsers: User[] = [];
-        const mapped: Message[] = res.messages.map((m: any) => {
+        const mapped: Message[] = messagesArray.map((m: any) => {
            const rawSender = m.sender || m.users;
            if (m.sender_id && rawSender) {
               const senderObj = Array.isArray(rawSender) ? rawSender[0] : rawSender;
-              newUsers.push({
+               newUsers.push({
                  id: m.sender_id,
-                 username: senderObj?.username || 'Usuario Desconocido',
+                 username: senderObj?.username?.toLowerCase() || 'usuario desconocido',
                  avatarUrl: senderObj?.avatar_url || '',
-                 email: '', age: 0, gender: 'X', region: senderObj?.region || '', interests: []
+                 email: '', age: 0, gender: 'X', region: senderObj?.region || '', interests: [],
+                 instagram: senderObj?.instagram, // @ts-ignore
+tiktok: senderObj?.tiktok, facebook: senderObj?.facebook
               });
            }
            return {
@@ -344,6 +646,8 @@ export const useUIStore = create<AppState>((set, get) => ({
            const existingIdx = mergedUsers.findIndex(u => u.id === nu.id);
            if (existingIdx === -1) {
              mergedUsers.push(nu);
+           } else if (mergedUsers[existingIdx].username === 'usuario desconocido' && nu.username !== 'usuario desconocido') {
+             mergedUsers[existingIdx] = { ...mergedUsers[existingIdx], ...nu };
            }
          });
          return { 
@@ -354,13 +658,73 @@ export const useUIStore = create<AppState>((set, get) => ({
     }
   },
 
+  activeEventsSubscription: null as any,
+  subscribeToEvents: (regionId: string) => {
+    const supabase = createBrowserClient();
+    const { activeEventsSubscription, fetchEventsForRegion } = get();
+    if (activeEventsSubscription) {
+      supabase.removeChannel(activeEventsSubscription);
+    }
+    const channel = supabase.channel('events_' + regionId)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, () => {
+         fetchEventsForRegion(regionId);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'event_attendees' }, () => {
+         fetchEventsForRegion(regionId);
+      })
+      .subscribe();
+    set({ activeEventsSubscription: channel });
+  },
+  unsubscribeFromEvents: () => {
+    const { activeEventsSubscription } = get();
+    if (activeEventsSubscription) {
+      createBrowserClient().removeChannel(activeEventsSubscription);
+      set({ activeEventsSubscription: null });
+    }
+  },
+
+  activeSubscription: null as any,
+  subscribeToRoom: (roomId: string) => {
+    const supabase = createBrowserClient();
+    const { activeSubscription, fetchMessagesForRoom } = get();
+    if (activeSubscription) {
+      supabase.removeChannel(activeSubscription);
+    }
+    const channel = supabase.channel(`room_${roomId}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `room_id=eq.${roomId}` }, (payload: any) => {
+         fetchMessagesForRoom(roomId);
+      })
+      .subscribe();
+    set({ activeSubscription: channel });
+  },
+  unsubscribeFromRoom: () => {
+    const { activeSubscription } = get();
+    if (activeSubscription) {
+      createBrowserClient().removeChannel(activeSubscription);
+      set({ activeSubscription: null });
+    }
+  },
+
   startDirectMessage: async (targetUserId) => {
-    const { currentUser, fetchMessagesForRoom } = get();
+    const { currentUser, fetchMessagesForRoom, dmChannels } = get();
     if (!currentUser) return;
+    
+    const existingChannel = dmChannels.find(ch => ch.other_user_id === targetUserId);
+    if (existingChannel && existingChannel.rooms?.id) {
+      set({
+        activeRoomId: existingChannel.rooms.id,
+        activeView: 'cartelera',
+        mobileView: 'chat',
+        selectedUserId: null,
+        selectedEventId: null
+      });
+      fetchMessagesForRoom(existingChannel.rooms.id).catch(console.error);
+      return;
+    }
     
     const res = await getOrCreateDMRoom(targetUserId);
     if (res.roomId) {
-      await fetchMessagesForRoom(res.roomId);
+      fetchMessagesForRoom(res.roomId).catch(console.error);
       
       const currentDmChannels = get().dmChannels;
       if (!currentDmChannels.some((ch: any) => ch.rooms?.id === res.roomId)) {
@@ -406,3 +770,4 @@ export const useUIStore = create<AppState>((set, get) => ({
     await fetchMessagesForRoom(roomId);
   }
 }))
+

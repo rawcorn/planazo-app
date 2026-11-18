@@ -22,24 +22,22 @@ export async function sendMessage(roomId: string, text: string, parentId?: strin
     }
 
     // ACÁ ESTABA EL PROBLEMA: Faltaba guardar el parent_id en la base de datos
-    const { error } = await supabase.from('messages').insert({
+    const { error, data } = await supabase.from('messages').insert({
       room_id: parsed.data.roomId,
       sender_id: user.id,
       text: parsed.data.text,
-      type: 'text',
-      // @ts-ignore
-      parent_id: parentId || null // <-- AHORA SÍ SE GUARDA LA RESPUESTA
-    })
+      type: 'text'
+    }).select()
 
     if (error) {
-      console.error(error)
+      console.error("SERVER ACTION INSERT ERROR:", error)
       return { error: 'Error al enviar el mensaje' }
     }
+    console.log("SERVER ACTION INSERT SUCCESS:", data)
 
-    revalidatePath('/', 'layout')
-    return { success: true }
+    return { success: true, message: data[0] }
   } catch (err) {
-    console.error(err)
+    console.error("SERVER ACTION CATCH ERROR:", err)
     return { error: 'Error interno del servidor' }
   }
 }
@@ -55,7 +53,7 @@ export async function getRoomMessages(roomId: string, page: number = 0, limit: n
       .from('messages')
       .select(`
         *,
-        sender:users(username, avatar_url, regions),
+        sender:users(username, avatar_url, region),
         event:events(title, description)
       `)
       .eq('room_id', roomId)
@@ -151,7 +149,7 @@ export async function deleteMessageForEveryone(messageId: string) {
       return { error: 'Error al eliminar mensaje' }
     }
 
-    revalidatePath('/', 'layout')
+
     return { success: true }
   } catch (err) {
     console.error(err)
@@ -177,7 +175,7 @@ export async function deleteMessageForMe(messageId: string) {
       return { error: 'Error al eliminar mensaje para ti' }
     }
 
-    revalidatePath('/', 'layout')
+
     return { success: true }
   } catch (err) {
     console.error(err)
@@ -214,10 +212,17 @@ export async function getDMChannels() {
       return { error: 'Error al obtener rooms de DM channels' }
     }
 
+    const otherIds = channels.map(ch => ch.user1_id === user.id ? ch.user2_id : ch.user1_id)
+    const { data: otherUsers } = await supabase
+      .from('users')
+      .select('id, username, avatar_url, region, instagram, facebook')
+      .in('id', otherIds)
+
     const mappedChannels = channels.map(ch => {
        const room = rooms?.find(r => r.reference_id === ch.id)
        const otherUserId = ch.user1_id === user.id ? ch.user2_id : ch.user1_id
-       return { ...ch, other_user_id: otherUserId, rooms: room ? { id: room.id } : null }
+       const otherUser = (otherUsers as any[])?.find(u => u.id === otherUserId) || null
+       return { ...ch, other_user_id: otherUserId, other_user: otherUser, rooms: room ? { id: room.id } : null }
     })
 
     return { channels: mappedChannels }

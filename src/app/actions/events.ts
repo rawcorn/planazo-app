@@ -1,7 +1,6 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { revalidatePath } from 'next/cache'
 import { eventSchema } from '@/lib/validations'
 
 export async function createEvent(eventData: any) {
@@ -33,10 +32,59 @@ export async function createEvent(eventData: any) {
 
     if (error) {
       console.error(error)
-      return { error: 'Error al crear el evento' }
+      return { error: 'Error al crear el evento: ' + error.message }
     }
 
-    revalidatePath('/', 'layout')
+    // Unir automáticamente al creador como asistente
+    await supabase
+      .from('event_attendees')
+      .insert({
+        event_id: data.id,
+        user_id: user.id,
+      })
+
+
+    return { success: true, event: data }
+  } catch (err) {
+    console.error(err)
+    return { error: 'Error interno del servidor' }
+  }
+}
+
+export async function updateEvent(eventId: string, eventData: any) {
+  try {
+    const parsed = eventSchema.safeParse(eventData)
+    if (!parsed.success) {
+      return { error: parsed.error.issues[0].message }
+    }
+
+    const supabase = await createClient()
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+
+    if (!user) {
+      return { error: 'Not authenticated' }
+    }
+
+    const { data, error } = await supabase
+      .from('events')
+      .update({
+        ...parsed.data,
+        description: parsed.data.description || '',
+      })
+      .eq('id', eventId)
+      .eq('creator_id', user.id)
+      .select()
+      .single()
+
+    if (error) {
+      console.error(error)
+      return { error: 'Error al actualizar el evento' }
+    }
+
+
     return { success: true, event: data }
   } catch (err) {
     console.error(err)
@@ -67,7 +115,7 @@ export async function deleteEvent(eventId: string) {
       return { error: 'Error al eliminar el evento' }
     }
 
-    revalidatePath('/', 'layout')
+
     return { success: true }
   } catch (err) {
     console.error(err)
@@ -97,7 +145,7 @@ export async function joinEvent(eventId: string) {
       return { error: 'Error al unirse al evento' }
     }
 
-    revalidatePath('/', 'layout')
+
     return { success: true }
   } catch (err) {
     console.error(err)
@@ -128,7 +176,7 @@ export async function leaveEvent(eventId: string) {
       return { error: 'Error al abandonar el evento' }
     }
 
-    revalidatePath('/', 'layout')
+
     return { success: true }
   } catch (err) {
     console.error(err)
@@ -187,6 +235,58 @@ export async function getEventDetails(eventId: string) {
     }
 
     return { event: data }
+  } catch (err) {
+    console.error(err)
+    return { error: 'Error interno del servidor' }
+  }
+}
+
+export async function getMyEvents() {
+  try {
+    const supabase = await createClient()
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+
+    if (!user) {
+      return { error: 'Not authenticated' }
+    }
+
+    // Buscamos todos los registros en event_attendees para este usuario
+    const { data: attendanceData, error: attendanceError } = await supabase
+      .from('event_attendees')
+      .select('event_id')
+      .eq('user_id', user.id)
+
+    if (attendanceError) {
+      console.error(attendanceError)
+      return { error: 'Error al obtener tus eventos' }
+    }
+
+    if (!attendanceData || attendanceData.length === 0) {
+      return { events: [] }
+    }
+
+    const eventIds = attendanceData.map((a: any) => a.event_id)
+
+    // Obtenemos los eventos completos usando los IDs
+    const { data, error } = await supabase
+      .from('events')
+      .select(`
+        *,
+        creator:users!events_creator_id_fkey(username, avatar_url, instagram, facebook),
+        event_attendees(user_id, users!event_attendees_user_id_fkey(username, avatar_url, age, gender, instagram, facebook))
+      `)
+      .in('id', eventIds)
+      .order('event_datetime', { ascending: true })
+
+    if (error) {
+      console.error(error)
+      return { error: 'Error al cargar los detalles de tus eventos' }
+    }
+
+    return { events: data }
   } catch (err) {
     console.error(err)
     return { error: 'Error interno del servidor' }

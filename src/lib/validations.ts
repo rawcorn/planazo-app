@@ -1,12 +1,19 @@
 import { z } from 'zod'
 
 export const signUpSchema = z.object({
-  email: z.string().email('Email inválido').optional().or(z.literal('')),
-  password: z.string().min(6, 'La contraseña debe tener al menos 6 caracteres'),
+  email: z.string().trim().email('Email inválido').optional().or(z.literal('')),
+  password: z.string()
+    .min(8, 'La contraseña debe tener al menos 8 caracteres')
+    .regex(/[A-Z]/, 'La contraseña debe contener al menos una letra mayúscula')
+    .regex(/[^a-zA-Z0-9]/, 'La contraseña debe contener al menos un carácter especial'),
   username: z.string().min(3, 'El nombre de usuario debe tener al menos 3 caracteres').max(30),
-  age: z.number().int().min(18, 'Debes ser mayor de 18 años'),
+  age: z.number().int('Debe ser un número entero').min(18, 'Debes ser mayor de 18 años'),
   gender: z.enum(['F', 'M', 'X'], { error: 'Género inválido' }),
-  region: z.string().min(1, 'La región es obligatoria')
+  region: z.string().min(1, 'La región es obligatoria'),
+  instagram: z.string().optional().or(z.literal('')),
+  tiktok: z.string().optional().or(z.literal('')),
+  facebook: z.string().optional().or(z.literal('')),
+  avatarUrl: z.string().optional().or(z.literal(''))
 })
 
 export const signInSchema = z.object({
@@ -24,10 +31,10 @@ export const eventSchema = z.object({
     return !isNaN(date.getTime()) && date > new Date()
   }, { message: 'La fecha del evento debe ser en el futuro' }),
   address: z.string().optional(),
-  max_attendees: z.number().int().min(2, 'Debe haber al menos 2 asistentes').optional(),
-  min_age: z.number().int().min(18).optional(),
-  max_age: z.number().int().max(100).optional(),
-  image_url: z.string().url().optional()
+  max_attendees: z.number().int().min(2, 'Debe haber al menos 2 asistentes').optional().nullable(),
+  min_age: z.number().int().min(18).optional().nullable(),
+  max_age: z.number().int().max(100).optional().nullable(),
+  image_url: z.string().url().optional().nullable()
 })
 
 export const messageSchema = z.object({
@@ -40,7 +47,9 @@ export const profileUpdateSchema = z.object({
   age: z.number().int().min(18).optional(),
   gender: z.enum(['F', 'M', 'X']).optional(),
   region: z.string().optional(),
-  avatar_url: z.string().url().optional(),
+  avatar_url: z.string().url().optional().or(z.literal('')),
   instagram: z.string().optional(),
-  facebook: z.string().optional()
+  tiktok: z.string().optional(),
+  facebook: z.string().optional(),
+  email: z.string().trim().email('Email inválido').optional().or(z.literal(''))
 })
