@@ -1,11 +1,13 @@
-import { useUIStore } from '@/store/uiStore'
-import { LogOut, X, MapPin, MessageCircle } from 'lucide-react'
+﻿import { useUIStore } from '@/store/uiStore'
+import { LogOut, X, MapPin, MessageCircle, Info, Calendar } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
+import { useState, useEffect } from 'react'
 
 export function LeftColumn() {
   const { 
     currentUser, 
     events, 
+    myEvents,
     messages,
     users,
     regions,
@@ -14,10 +16,13 @@ export function LeftColumn() {
     setActiveRoom, 
     setMobileView, 
     logout,
-    setSelectedUser
+    setSelectedUser,
+    setSelectedEvent,
+    selectedEventId
   } = useUIStore(useShallow(state => ({
     currentUser: state.currentUser,
     events: state.events,
+    myEvents: state.myEvents,
     messages: state.messages,
     users: state.users,
     regions: state.regions,
@@ -26,26 +31,42 @@ export function LeftColumn() {
     setActiveRoom: state.setActiveRoom,
     setMobileView: state.setMobileView,
     logout: state.logout,
-    setSelectedUser: state.setSelectedUser
+    setSelectedUser: state.setSelectedUser,
+    setSelectedEvent: state.setSelectedEvent,
+    selectedEventId: state.selectedEventId
   })))
 
-  if (!currentUser) return null;
+  const [lastReadMap, setLastReadMap] = useState<Record<string, number>>({})
 
-  const myEvents = events.filter(e => e.attendees.includes(currentUser.id));
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('planazo_last_read')
+      if (stored) setLastReadMap(JSON.parse(stored))
+    }
+  }, [])
+
+  useEffect(() => {
+    if (activeRoomId && typeof window !== 'undefined') {
+      setLastReadMap(prev => {
+        const next = { ...prev, [activeRoomId]: Date.now() }
+        localStorage.setItem('planazo_last_read', JSON.stringify(next))
+        return next
+      })
+    }
+  }, [activeRoomId])
+
+  if (!currentUser) return null;
   
-  const regionRoomIds = regions.map(r => r.room_id);
-  const dmRoomIds = Object.keys(messages).filter(id => !regionRoomIds.includes(id) && !events.some(e => e.id === id));
-  
-  if (!regionRoomIds.includes(activeRoomId) && !events.some(e => e.id === activeRoomId) && !dmRoomIds.includes(activeRoomId)) {
-    dmRoomIds.push(activeRoomId);
-  }
+  const dmRoomIds: string[] = Array.from(new Set(
+    (dmChannels || []).map((ch: any) => ch.rooms?.id).filter(Boolean)
+  ));
 
   return (
     <div className="flex flex-col h-full w-full bg-transparent text-slate-900 border-r border-[#D5CAFA]/30">
       {/* HEADER */}
       <div className="p-5 flex items-center justify-between shrink-0 bg-transparent">
         <div 
-          className="flex items-center gap-3 cursor-pointer group p-2 -ml-2 rounded-2xl hover:bg-[#EFE9FB] transition-colors" 
+          className="flex items-center gap-3 cursor-pointer group p-2 -ml-2 rounded-2xl hover:bg-[#EFE9FB] transition-colors flex-1 min-w-0" 
           onClick={() => {
             setSelectedUser(currentUser.id);
             if(window.innerWidth < 1024) setMobileView('details');
@@ -58,17 +79,17 @@ export function LeftColumn() {
               {currentUser.username.charAt(0).toUpperCase()}
             </div>
           )}
-          <div>
-            <h1 className="font-black text-xl leading-tight text-slate-900">Planazo</h1>
-            <p className="text-xs text-slate-600 font-medium">@{currentUser.username}</p>
+          <div className="min-w-0">
+            <h1 className="font-black text-xl leading-tight text-[#3f3f46] truncate">Planazo</h1>
+            <p className="text-xs text-slate-600 font-medium truncate">{currentUser.username}</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
+          <button onClick={logout} className="p-2 text-slate-400 hover:text-slate-700 hover:bg-[#EFE9FB] rounded-xl transition-colors" title="Cerrar sesión">
+            <LogOut className="h-5 w-5" />
+          </button>
           <button onClick={() => setMobileView('chat')} className="lg:hidden p-2 text-slate-600 hover:text-slate-900 hover:bg-[#EFE9FB] rounded-xl transition-colors">
             <X className="h-5 w-5" />
-          </button>
-          <button onClick={logout} className="p-2 text-slate-400 hover:text-slate-700 hover:bg-[#EFE9FB] rounded-xl hidden lg:block transition-colors" title="Cerrar sesión">
-            <LogOut className="h-5 w-5" />
           </button>
         </div>
       </div>
@@ -124,22 +145,48 @@ export function LeftColumn() {
           ) : (
             <div className="space-y-1">
               {myEvents.map(event => (
-                <button
-                  key={event.id}
-                  onClick={() => { 
-                    setActiveRoom(event.id);
-                    if(window.innerWidth < 1024) setMobileView('chat');
-                  }}
-                  className={`w-full text-left px-4 py-3 rounded-[1.5rem] flex items-center gap-4 transition-colors ${activeRoomId === event.id ? 'bg-[#D5CAFA] text-slate-900 font-bold' : 'hover:bg-[#EFE9FB] text-slate-700 font-medium'}`}
-                >
-                  <div className={`h-9 w-9 rounded-full flex items-center justify-center font-bold overflow-hidden ${activeRoomId === event.id ? 'bg-white shadow-sm text-slate-800' : 'bg-[#E5D0BA] text-slate-800'}`}>
-                    {event.imageUrl ? <img src={event.imageUrl} alt={event.title} className="h-full w-full object-cover" /> : event.title.charAt(0)}
+                <div key={event.id} className={`w-full flex items-center p-2 mb-2 rounded-[1.2rem] border transition-all ${activeRoomId === event.id ? 'bg-[#F8F5FF] border-[#D5CAFA] shadow-sm' : 'bg-white border-transparent hover:border-slate-100 hover:bg-slate-50 hover:shadow-sm'}`}>
+                  <div className="flex-1 flex items-center gap-3 min-w-0 pr-2">
+                    <div className="h-10 w-10 shrink-0 rounded-xl flex items-center justify-center font-bold overflow-hidden bg-slate-100 text-slate-700 shadow-inner">
+                      {event.imageUrl ? <img src={event.imageUrl} alt={event.title} className="h-full w-full object-cover" /> : event.title.charAt(0)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className={`truncate text-[14px] ${activeRoomId === event.id ? 'font-bold text-violet-900' : 'font-semibold text-slate-800'}`}>{event.title}</p>
+                      <p className={`text-[11px] truncate flex items-center gap-1 mt-0.5 ${activeRoomId === event.id ? 'text-violet-600' : 'text-slate-500'}`}>
+                        <Calendar className="h-3 w-3" />
+                        {new Date(event.date).toLocaleDateString('es-AR', { weekday: 'short' }).replace('.', '')} {new Date(event.date).getDate()}/{new Date(event.date).getMonth() + 1}
+                      </p>
+                    </div>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="truncate text-[15px]">{event.title}</p>
-                    <p className={`text-[11px] truncate mt-0.5 ${activeRoomId === event.id ? 'text-slate-700' : 'text-slate-500'}`}>{new Date(event.date).toLocaleDateString('es-AR')}</p>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => {
+                        setSelectedEvent(event.id);
+                        // No entramos al chat del plan. Volvemos al chat general para no forzar la vista del chat.
+                        const userRegion = regions.find(r => r.name === currentUser?.region);
+                        const fallbackRoom = userRegion?.room_id || regions[0]?.room_id || '';
+                        if (activeRoomId !== event.id) {
+                           setActiveRoom(fallbackRoom);
+                           setSelectedEvent(event.id); // setActiveRoom clears selectedEventId, so we set it again
+                        }
+                        if(window.innerWidth < 1024) setMobileView('details');
+                      }}
+                      className={`px-3 py-1.5 text-[11px] font-bold rounded-xl transition-all ${selectedEventId === event.id ? 'bg-[#A698E3] text-white shadow-md' : 'bg-slate-100 hover:bg-slate-200 text-slate-600'}`}
+                    >
+                      Detalles
+                    </button>
+                    <button
+                      onClick={() => { 
+                        setActiveRoom(event.id);
+                        setSelectedEvent(event.id);
+                        if(window.innerWidth < 1024) setMobileView('chat');
+                      }}
+                      className={`px-3 py-1.5 text-[11px] font-bold rounded-xl transition-all ${activeRoomId === event.id ? 'bg-[#A1D9EC] text-white shadow-md' : 'bg-slate-100 hover:bg-[#EAF6FA] text-slate-600 hover:text-[#5DB8D8]'}`}
+                    >
+                      Chat
+                    </button>
                   </div>
-                </button>
+                </div>
               ))}
             </div>
           )}
@@ -165,6 +212,11 @@ export function LeftColumn() {
                 const otherUser = otherUserId ? users.find(u => u.id === otherUserId) : null;
                 if (!otherUser) return null;
 
+                const chMessages = messages[dmId] || [];
+                const lastReadTime = lastReadMap[dmId] || 0;
+                const unreadCount = chMessages.filter(m => new Date(m.timestamp).getTime() > lastReadTime && m.senderId !== currentUser?.id).length;
+                const hasUnread = unreadCount > 0 && activeRoomId !== dmId;
+
                 return (
                   <button
                     key={dmId}
@@ -172,17 +224,22 @@ export function LeftColumn() {
                       setActiveRoom(dmId);
                       if(window.innerWidth < 1024) setMobileView('chat');
                     }}
-                    className={`w-full text-left px-4 py-3 rounded-[1.5rem] flex items-center gap-4 transition-colors ${activeRoomId === dmId ? 'bg-[#D5CAFA] text-slate-900 font-bold' : 'hover:bg-[#EFE9FB] text-slate-700 font-medium'}`}
+                    className={`w-full text-left px-4 py-3 rounded-[1.5rem] flex items-center gap-4 transition-colors ${activeRoomId === dmId ? 'bg-[#D5CAFA] text-slate-900 font-bold' : hasUnread ? 'bg-[#EFE9FB] text-slate-900 font-black' : 'hover:bg-[#EFE9FB] text-slate-700 font-medium'}`}
                   >
-                    <div className="h-9 w-9 rounded-full bg-slate-800 overflow-hidden flex items-center justify-center font-bold text-white">
+                    <div className="h-9 w-9 rounded-full bg-slate-800 overflow-hidden flex items-center justify-center font-bold text-white relative shrink-0">
                       {otherUser.avatarUrl ? (
                         <img src={otherUser.avatarUrl} alt={otherUser.username} className="h-full w-full object-cover" />
                       ) : (
                         <span>{otherUser.username.charAt(0).toUpperCase()}</span>
                       )}
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="truncate text-[15px]">@{otherUser.username}</p>
+                    <div className="flex-1 min-w-0 flex items-center justify-between">
+                      <p className={`truncate text-[15px] ${hasUnread ? 'font-black' : ''}`}>{otherUser.username}</p>
+                      {hasUnread && (
+                        <div className="bg-emerald-500 text-white text-[10px] font-black h-5 min-w-[20px] px-1.5 rounded-full flex items-center justify-center shrink-0">
+                          {unreadCount}
+                        </div>
+                      )}
                     </div>
                   </button>
                 )
@@ -194,3 +251,4 @@ export function LeftColumn() {
     </div>
   )
 }
+

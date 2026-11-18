@@ -1,13 +1,15 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react'
 import { useUIStore } from '@/store/uiStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Menu, ChevronLeft, Send, MessageSquare, X, CornerUpLeft, CornerUpRight, Copy, Trash2 } from 'lucide-react'
+import { Menu, ChevronLeft, Send, MessageSquare, X, CornerUpLeft, CornerUpRight, Copy, Trash2, Calendar } from 'lucide-react'
+import { getRegionMemberCount } from '@/app/actions/catalog'
 
 export function CenterColumn() {
   const { 
     currentUser, 
     users, 
     events, 
+    myEvents,
     messages, 
     regions,
     dmChannels,
@@ -19,11 +21,13 @@ export function CenterColumn() {
     setSelectedEvent,
     setSelectedUser,
     deleteMessageForMe,
-    deleteMessageForEveryone
+    deleteMessageForEveryone,
+    resetRightColumn
   } = useUIStore(useShallow(state => ({
     currentUser: state.currentUser,
     users: state.users,
     events: state.events,
+    myEvents: state.myEvents,
     messages: state.messages,
     regions: state.regions,
     dmChannels: state.dmChannels,
@@ -35,7 +39,8 @@ export function CenterColumn() {
     setSelectedEvent: state.setSelectedEvent,
     setSelectedUser: state.setSelectedUser,
     deleteMessageForMe: state.deleteMessageForMe,
-    deleteMessageForEveryone: state.deleteMessageForEveryone
+    deleteMessageForEveryone: state.deleteMessageForEveryone,
+    resetRightColumn: state.resetRightColumn
   })))
 
   const [chatText, setChatText] = useState('');
@@ -43,6 +48,7 @@ export function CenterColumn() {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [replyingTo, setReplyingTo] = useState<any>(null); 
   const [forwardingMsg, setForwardingMsg] = useState<any>(null);
+  const [memberCount, setMemberCount] = useState<number | null>(null);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const longPressTimer = useRef<NodeJS.Timeout | null>(null);
@@ -51,30 +57,66 @@ export function CenterColumn() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, activeRoomId]);
 
+  const [hasUnread, setHasUnread] = useState(false);
+  useEffect(() => {
+    if (typeof window !== 'undefined' && currentUser) {
+      const stored = localStorage.getItem('planazo_last_read')
+      const lastReadMap = stored ? JSON.parse(stored) : {}
+      let unread = false;
+      dmChannels.forEach((ch: any) => {
+        const dmId = ch.rooms?.id;
+        if (!dmId) return;
+        const chMsgs = messages[dmId] || [];
+        const lastReadTime = lastReadMap[dmId] || 0;
+        const count = chMsgs.filter(m => new Date(m.timestamp).getTime() > lastReadTime && m.senderId !== currentUser.id).length;
+        if (count > 0 && activeRoomId !== dmId) unread = true;
+      });
+      setHasUnread(unread);
+    }
+  }, [messages, dmChannels, activeRoomId, currentUser]);
+
   useEffect(() => {
     setReplyingTo(null);
     setActiveMessageMenu(null);
     setForwardingMsg(null);
   }, [activeRoomId]);
 
+  useEffect(() => {
+    const fetchMemberCount = async () => {
+      const activeRegion = regions.find(r => r.room_id === activeRoomId);
+      if (activeRegion) {
+        const res = await getRegionMemberCount(activeRegion.name);
+        setMemberCount(res.count);
+      } else {
+        setMemberCount(null);
+      }
+    };
+    fetchMemberCount();
+  }, [activeRoomId, regions]);
+
   if (!currentUser) return null;
-  if (!activeRoomId) return <div className=""flex-1 flex items-center justify-center bg-slate-50""><p className=""text-slate-500 font-medium"">Selecciona una sala para chatear</p></div>;
+  if (!activeRoomId) return <div className="flex-1 flex items-center justify-center bg-slate-50"><p className="text-slate-500 font-medium">Selecciona una sala para chatear</p></div>;
   const activeRegion = regions.find(r => r.room_id === activeRoomId);
   const isRegionRoom = !!activeRegion;
-  const isEventRoom = !isRegionRoom && events.some(e => e.id === activeRoomId);
+  const isEventRoom = !isRegionRoom && (events.some(e => e.id === activeRoomId) || myEvents.some(e => e.id === activeRoomId));
   const isDMRoom = !isRegionRoom && !isEventRoom;
 
-  const activeEvent = isEventRoom ? events.find(e => e.id === activeRoomId) : null;
+  const activeEvent = isEventRoom ? (events.find(e => e.id === activeRoomId) || myEvents.find(e => e.id === activeRoomId)) : null;
   
   let dmUser = null;
   if (isDMRoom) {
     let otherUserId: string | null = null;
     const dmChannel = dmChannels?.find((ch: any) => ch.rooms?.id === activeRoomId);
-    if (dmChannel && dmChannel.other_user_id) {
-      otherUserId = dmChannel.other_user_id;
+    if (dmChannel && (dmChannel as any).other_user_id) {
+      otherUserId = (dmChannel as any).other_user_id;
     } else {
-      const firstOtherMsg = messages[activeRoomId]?.find(m => m.senderId && m.senderId !== currentUser.id);
-      if (firstOtherMsg) otherUserId = firstOtherMsg.senderId!;
+      const roomMsgs: any[] = (messages as Record<string, any[]>)?.[activeRoomId] || [];
+      const firstOtherMsg = roomMsgs.find(
+        (m: any) => (m.senderId || m.sender_id) && (m.senderId || m.sender_id) !== currentUser.id
+      );
+      if (firstOtherMsg) {
+        otherUserId = firstOtherMsg.senderId || firstOtherMsg.sender_id;
+      }
     }
     if (otherUserId) dmUser = getUser(otherUserId);
   }
@@ -97,7 +139,7 @@ export function CenterColumn() {
   };
 
   function getUser(id: string) {
-    return users.find(u => u.id === id) || { username: 'Usuario Desconocido', avatarUrl: '', interests: [], region: '' };
+    return users.find(u => u.id === id) || { username: 'usuario desconocido', avatarUrl: '', interests: [], region: '' };
   }
 
   // --- LÓGICA DE GESTOS ---
@@ -181,7 +223,7 @@ export function CenterColumn() {
     <div className="flex flex-col h-full w-full bg-white relative overflow-hidden">
 
       {/* HEADER */}
-      <div className="h-[88px] px-6 border-b border-[#D5CAFA]/30 bg-white flex items-center justify-between z-10 shrink-0">
+      <div id="tour-center-header" className="h-[88px] px-6 border-b border-[#D5CAFA]/30 bg-white flex items-center justify-between z-10 shrink-0">
         {activeThreadId ? (
           <div className="flex items-center gap-3">
             <button onClick={() => setActiveThreadId(null)} className="p-2 -ml-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors">
@@ -191,41 +233,97 @@ export function CenterColumn() {
           </div>
         ) : (
           <div className="flex items-center gap-3 overflow-hidden">
-            <button onClick={() => setMobileView('menu')} className="lg:hidden p-2 -ml-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors">
+            <button id="tour-hamburger" onClick={() => setMobileView('menu')} className="lg:hidden p-2 -ml-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors relative">
               <Menu className="h-5 w-5" />
+              {hasUnread && <span className="absolute top-1.5 right-1.5 h-2 w-2 bg-emerald-500 rounded-full border border-white"></span>}
             </button>
             
-            <div className="h-10 w-10 rounded-full bg-[#FFB5B5] text-white flex items-center justify-center font-bold shrink-0 overflow-hidden">
-              {isEventRoom ? (
-                activeEvent?.imageUrl ? <img src={activeEvent.imageUrl} alt={activeEvent.title} className="h-full w-full object-cover" /> : activeEvent?.title.charAt(0)
-              ) : isDMRoom && dmUser ? (
-                dmUser.avatarUrl ? <img src={dmUser.avatarUrl} alt={dmUser.username} className="h-full w-full object-cover" /> : dmUser.username.charAt(0).toUpperCase()
-              ) : (
-                '📍'
-              )}
-            </div>
+            {(() => {
+              let headerIconClass = "h-10 w-10 flex items-center justify-center font-bold shrink-0 overflow-hidden ";
+              let headerIconContent = null;
+              
+              if (isEventRoom && activeEvent) {
+                headerIconClass += "rounded-full bg-[#E5D0BA] text-slate-800";
+                headerIconContent = activeEvent.imageUrl ? (
+                  <img src={activeEvent.imageUrl} alt={activeEvent.title} className="h-full w-full object-cover" />
+                ) : (
+                  activeEvent.title.charAt(0)
+                );
+              } else if (isDMRoom && dmUser) {
+                headerIconClass += "rounded-full bg-slate-800 text-white";
+                headerIconContent = dmUser.avatarUrl ? (
+                  <img src={dmUser.avatarUrl} alt={dmUser.username} className="h-full w-full object-cover" />
+                ) : (
+                  dmUser.username.charAt(0).toUpperCase()
+                );
+              } else if (isRegionRoom && activeRegion) {
+                const pastelIconBgs = ['bg-[#A7F3D0]', 'bg-[#FBCFE8]', 'bg-[#FDE047]', 'bg-[#C7D2FE]', 'bg-[#FECACA]'];
+                const bgClass = pastelIconBgs[activeRegion.name.length % pastelIconBgs.length];
+                headerIconClass += `rounded-xl ${bgClass} text-lg shadow-sm`;
+                
+                if (activeRegion.name.includes('CABA')) headerIconContent = '🗺️';
+                else if (activeRegion.name.includes('GBA')) headerIconContent = '🏘️';
+                else if (activeRegion.name.includes('Córdoba')) headerIconContent = '🏞️';
+                else if (activeRegion.name.includes('Mendoza')) headerIconContent = '🍷';
+                else if (activeRegion.name.includes('Rosario')) headerIconContent = '🚢';
+                else headerIconContent = '📍';
+              } else {
+                headerIconClass += "rounded-full bg-[#FFB5B5] text-white";
+                headerIconContent = '📍';
+              }
+
+              return (
+                <div className={headerIconClass}>
+                  {headerIconContent}
+                </div>
+              );
+            })()}
             <div className="min-w-0">
-              <h2 className="font-black text-lg text-slate-900 truncate">
+              <h2 className="font-black text-lg text-[#3f3f46] truncate">
                 {isEventRoom ? activeEvent?.title : isDMRoom ? dmUser?.username : activeRegion?.name}
               </h2>
-              <p className="text-xs text-slate-500 font-medium truncate flex items-center gap-1">
-                {isEventRoom ? (
-                  <span>{activeEvent?.attendees.length} asistentes</span>
+              <p className="text-[11px] text-slate-500 font-medium truncate flex items-center gap-1.5">
+                {isEventRoom && activeEvent ? (
+                  <>
+                    <span>{activeEvent.attendees.length} asist.</span>
+                    <span className="text-slate-300">•</span>
+                    <Calendar className="h-3 w-3 text-slate-400" />
+                    <span>
+                      {new Date(activeEvent.date).toLocaleDateString('es-AR', { weekday: 'short' }).replace('.', '')} {new Date(activeEvent.date).getDate()}/{new Date(activeEvent.date).getMonth() + 1}
+                    </span>
+                    <span className="text-slate-300">•</span>
+                    <span>
+                      {new Date(activeEvent.date).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </>
                 ) : isDMRoom ? (
                   <span>Mensaje Privado</span>
                 ) : (
-                  <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#86E2B5]"></span> Comunidad</span>
+                  <span className="flex items-center gap-1.5 font-medium text-slate-500">
+                    <span className="w-2 h-2 rounded-full bg-[#86E2B5]"></span>
+                    {memberCount !== null ? `${memberCount >= 1000 ? (memberCount/1000).toFixed(1) + 'k' : memberCount} miembros` : '...'}
+                  </span>
                 )}
               </p>
             </div>
           </div>
         )}
-        <button 
-          onClick={() => setMobileView('details')} 
-          className="lg:hidden p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-xl flex items-center gap-1 transition-colors"
-        >
-          <ChevronLeft className="h-5 w-5 rotate-180" />
-        </button>
+        {(isEventRoom || isDMRoom) ? (
+          <button 
+            onClick={() => { resetRightColumn(); if(window.innerWidth < 1024) setMobileView('menu'); }} 
+            className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-xl flex items-center gap-1 transition-colors"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        ) : (
+          <button 
+            id="tour-right-panel-btn"
+            onClick={() => setMobileView('details')} 
+            className="lg:hidden p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-xl flex items-center gap-1 transition-colors"
+          >
+            <ChevronLeft className="h-5 w-5 rotate-180" />
+          </button>
+        )}
       </div>
 
       {/* MESSAGES */}
@@ -282,7 +380,7 @@ export function CenterColumn() {
                 && !isSystem && !nextIsSystem
                 && !isTimeGapTooBig(msg.timestamp, nextMsg.timestamp));
 
-              const linkedEvent = isSystem ? events.find(e => e.id === msg.eventId) : null;
+              const linkedEvent = isSystem ? (events.find(e => e.id === msg.eventId) || myEvents.find(e => e.id === msg.eventId)) : null;
               if (isSystem && !linkedEvent) return null;
 
               const effectiveSenderId = isSystem ? linkedEvent?.creatorId : msg.senderId;
@@ -355,6 +453,7 @@ export function CenterColumn() {
                       onTouchStart={canReply ? (e) => handlePointerDown(e, msg.id) : undefined}
                       onTouchMove={canReply ? handlePointerMove : undefined}
                       onTouchEnd={canReply ? (e) => handlePointerUp(e, msg) : undefined}
+                      onTouchCancel={canReply ? (e) => handlePointerUp(e, msg) : undefined}
                       onMouseDown={canReply ? (e) => handlePointerDown(e, msg.id) : undefined}
                       onMouseMove={canReply ? handlePointerMove : undefined}
                       onMouseUp={canReply ? (e) => handlePointerUp(e, msg) : undefined}
@@ -395,7 +494,7 @@ export function CenterColumn() {
                           }}
                         >
                           <p className="text-[13px] leading-snug break-words whitespace-pre-wrap font-medium text-slate-500">
-                            @{senderUser?.username || 'Usuario Desconocido'} ha armado un nuevo planazo. ¡Sumate!
+                            {senderUser?.username || 'usuario desconocido'} ha armado un nuevo planazo. ¡Sumate!
                           </p>
                           <div className="mt-2 p-2 bg-white/60 rounded-xl border border-slate-200/50">
                             <div className="mb-1.5">
@@ -403,9 +502,22 @@ export function CenterColumn() {
                                 ✨ Planazo
                               </span>
                             </div>
-                            <p className="font-bold text-[13px] text-slate-700">{linkedEvent!.title}</p>
-                            {linkedEvent!.description && (
-                              <p className="text-[11px] text-slate-400 line-clamp-1 mt-0.5">{linkedEvent!.description}</p>
+                            <p className="font-bold text-[13px] text-slate-700">
+                              {linkedEvent!.title}
+                              {linkedEvent!.description?.match(/<!--edited.*?-->/) && (() => {
+                                const match = linkedEvent!.description.match(/<!--edited:(.*?)-->/);
+                                const edits = match ? match[1] : '';
+                                return (
+                                  <span className="ml-2 bg-slate-200 text-slate-500 text-[8px] px-1.5 py-0.5 rounded uppercase font-bold border border-slate-300">
+                                    {edits && edits !== 'algo' ? `Editado: ${edits}` : 'Editado'}
+                                  </span>
+                                );
+                              })()}
+                            </p>
+                            {linkedEvent!.description && linkedEvent!.description.replace(/<!--edited.*?-->/g, '').trim() !== '' && (
+                              <p className="text-[11px] text-slate-400 line-clamp-1 mt-0.5">
+                                {linkedEvent!.description.replace(/<!--edited.*?-->/g, '')}
+                              </p>
                             )}
                           </div>
                         </div>
@@ -556,7 +668,7 @@ export function CenterColumn() {
               disabled={!chatText.trim()}
               className="h-14 w-14 flex items-center justify-center bg-[#86E2B5] text-white rounded-full hover:bg-[#75D1A4] disabled:opacity-50 transition-colors shrink-0"
             >
-              <Send className="h-6 w-6 ml-1" />
+              <Send className="h-6 w-6" />
             </button>
           </form>
         </div>
@@ -602,7 +714,22 @@ export function CenterColumn() {
                     }}
                     className="flex items-center gap-3 p-3 rounded-2xl hover:bg-slate-50 transition-colors text-left border border-transparent hover:border-slate-100"
                   >
-                    <div className="w-12 h-12 rounded-full bg-[#FFB5B5] flex items-center justify-center text-white font-bold text-xl shadow-sm shrink-0">📍</div>
+                    {(() => {
+                      const pastelIconBgs = ['bg-[#A7F3D0]', 'bg-[#FBCFE8]', 'bg-[#FDE047]', 'bg-[#C7D2FE]', 'bg-[#FECACA]'];
+                      const bgClass = pastelIconBgs[r.name.length % pastelIconBgs.length];
+                      let iconContent = '📍';
+                      if (r.name.includes('CABA')) iconContent = '🗺️';
+                      else if (r.name.includes('GBA')) iconContent = '🏘️';
+                      else if (r.name.includes('Córdoba')) iconContent = '🏞️';
+                      else if (r.name.includes('Mendoza')) iconContent = '🍷';
+                      else if (r.name.includes('Rosario')) iconContent = '🚢';
+                      
+                      return (
+                        <div className={`w-12 h-12 rounded-xl ${bgClass} flex items-center justify-center text-xl shadow-sm shrink-0`}>
+                          {iconContent}
+                        </div>
+                      );
+                    })()}
                     <div className="min-w-0">
                       <span className="font-bold text-slate-800 block truncate">{r.name}</span>
                       <span className="text-xs text-slate-500">Sala pública</span>

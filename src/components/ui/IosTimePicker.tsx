@@ -13,8 +13,24 @@ interface IosTimePickerProps {
 export function IosTimePicker({ hour, minute, onHourChange, onMinuteChange, selectedDate, hasError }: IosTimePickerProps) {
   const hourRef = useRef<HTMLDivElement>(null);
   const minRef = useRef<HTMLDivElement>(null);
+  const ignoreScroll = useRef(false);
+  const prevHour = useRef(hour);
+  const prevMinute = useRef(minute);
 
-  const isToday = selectedDate === new Date().toISOString().split('T')[0];
+  if (hour !== prevHour.current) {
+    ignoreScroll.current = true;
+    prevHour.current = hour;
+    setTimeout(() => { ignoreScroll.current = false; }, 250);
+  }
+  if (minute !== prevMinute.current) {
+    ignoreScroll.current = true;
+    prevMinute.current = minute;
+    setTimeout(() => { ignoreScroll.current = false; }, 250);
+  }
+
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const isToday = selectedDate === todayStr;
   const currentHour = new Date().getHours();
   const currentMinute = new Date().getMinutes();
 
@@ -28,39 +44,69 @@ export function IosTimePicker({ hour, minute, onHourChange, onMinuteChange, sele
 
   const ITEM_HEIGHT = 36; // px
 
-  // Initialize with some default if empty or if invalid due to filtering
+  // Initialize with intelligent default ONLY when date is selected
   useEffect(() => {
-    if ((!hour || !hours.includes(hour)) && hours.length > 0) {
+    if (!hour && hours.length > 0 && selectedDate) {
+      const defaultH = isToday ? String(new Date().getHours()).padStart(2, '0') : '00';
+      onHourChange(hours.includes(defaultH) ? defaultH : hours[0]);
+    } else if (hour && !hours.includes(hour) && hours.length > 0) {
       onHourChange(hours[0]);
     }
-  }, [hours, hour, onHourChange]);
+  }, [hours, hour, onHourChange, isToday, selectedDate]);
 
   useEffect(() => {
-    if ((!minute || !minutes.includes(minute)) && minutes.length > 0) {
+    if (!minute && minutes.length > 0 && selectedDate) {
+      const defaultM = isToday ? String(new Date().getMinutes()).padStart(2, '0') : '00';
+      onMinuteChange(minutes.includes(defaultM) ? defaultM : minutes[0]);
+    } else if (minute && !minutes.includes(minute) && minutes.length > 0) {
       onMinuteChange(minutes[0]);
     }
-  }, [minutes, minute, onMinuteChange]);
+  }, [minutes, minute, onMinuteChange, isToday, selectedDate]);
 
   useEffect(() => {
+    let t: any;
     if (hourRef.current && hour && hours.includes(hour)) {
       const idx = hours.indexOf(hour);
-      if (idx !== -1 && Math.round(hourRef.current.scrollTop / ITEM_HEIGHT) !== idx) {
-        hourRef.current.scrollTop = idx * ITEM_HEIGHT;
-      }
+      t = setTimeout(() => {
+        if (hourRef.current && Math.round(hourRef.current.scrollTop / ITEM_HEIGHT) !== idx) {
+          ignoreScroll.current = true;
+            const el = hourRef.current;
+            const oldBehavior = el.style.scrollBehavior;
+            el.style.scrollBehavior = 'auto'; // Force instant jump
+            el.scrollTop = idx * ITEM_HEIGHT;
+            setTimeout(() => { 
+              if (el) el.style.scrollBehavior = oldBehavior;
+              ignoreScroll.current = false; 
+            }, 50);
+        }
+      }, 50);
     }
-  }, [hour]);
+    return () => clearTimeout(t);
+  }, [hour, hours]);
 
   useEffect(() => {
+    let t: any;
     if (minRef.current && minute && minutes.includes(minute)) {
       const idx = minutes.indexOf(minute);
-      if (idx !== -1 && Math.round(minRef.current.scrollTop / ITEM_HEIGHT) !== idx) {
-        minRef.current.scrollTop = idx * ITEM_HEIGHT;
-      }
+      t = setTimeout(() => {
+        if (minRef.current && Math.round(minRef.current.scrollTop / ITEM_HEIGHT) !== idx) {
+          ignoreScroll.current = true;
+            const el = minRef.current;
+            const oldBehavior = el.style.scrollBehavior;
+            el.style.scrollBehavior = 'auto'; // Force instant jump
+            el.scrollTop = idx * ITEM_HEIGHT;
+            setTimeout(() => { 
+              if (el) el.style.scrollBehavior = oldBehavior;
+              ignoreScroll.current = false; 
+            }, 50);
+        }
+      }, 50);
     }
-  }, [minute]);
+    return () => clearTimeout(t);
+  }, [minute, minutes]);
 
   const handleScrollHour = () => {
-    if (!hourRef.current) return;
+    if (!hourRef.current || ignoreScroll.current) return;
     const scrollY = hourRef.current.scrollTop;
     const activeIdx = Math.round(scrollY / ITEM_HEIGHT);
     if (hours[activeIdx] && hours[activeIdx] !== hour) {
@@ -69,13 +115,50 @@ export function IosTimePicker({ hour, minute, onHourChange, onMinuteChange, sele
   }
 
   const handleScrollMinute = () => {
-    if (!minRef.current) return;
+    if (!minRef.current || ignoreScroll.current) return;
     const scrollY = minRef.current.scrollTop;
     const activeIdx = Math.round(scrollY / ITEM_HEIGHT);
     if (minutes[activeIdx] && minutes[activeIdx] !== minute) {
       onMinuteChange(minutes[activeIdx]);
     }
   }
+
+  const handleDragStart = (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>, targetRef: React.RefObject<HTMLDivElement | null>) => {
+    if (!targetRef.current) return;
+    const el = targetRef.current;
+    
+    // @ts-ignore
+    const startY = e.type.includes('touch') ? (e as React.TouchEvent).touches[0].pageY : (e as React.MouseEvent).pageY;
+    const startScrollTop = el.scrollTop;
+
+    el.style.scrollBehavior = 'auto';
+    el.style.scrollSnapType = 'none';
+
+    const onMove = (moveEvent: MouseEvent | TouchEvent) => {
+      moveEvent.preventDefault();
+      // @ts-ignore
+      const y = moveEvent.type.includes('touch') ? (moveEvent as TouchEvent).touches[0].pageY : (moveEvent as MouseEvent).pageY;
+      const walk = (y - startY) * 1.5;
+      el.scrollTop = startScrollTop - walk;
+    };
+
+    const onEnd = () => {
+      el.style.scrollBehavior = 'smooth';
+      el.style.scrollSnapType = 'y mandatory';
+      const activeIdx = Math.round(el.scrollTop / ITEM_HEIGHT);
+      el.scrollTo({ top: activeIdx * ITEM_HEIGHT, behavior: 'smooth' });
+      
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onEnd);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onEnd);
+    };
+
+    window.addEventListener('mousemove', onMove, { passive: false });
+    window.addEventListener('mouseup', onEnd);
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('touchend', onEnd);
+  };
 
   const renderWheel = (
     items: string[], 
@@ -90,7 +173,9 @@ export function IosTimePicker({ hour, minute, onHourChange, onMinuteChange, sele
         <div 
           ref={ref}
           onScroll={onScroll}
-          className="h-[108px] w-[55px] overflow-y-scroll snap-y snap-mandatory scroll-smooth hide-scrollbar relative z-10"
+          onMouseDown={(e) => handleDragStart(e, ref)}
+          onTouchStart={(e) => handleDragStart(e, ref)}
+          className="h-[108px] w-[55px] overflow-y-scroll overflow-x-hidden touch-none overscroll-y-contain snap-y snap-mandatory hide-scrollbar relative z-10 cursor-grab active:cursor-grabbing"
           style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
         >
           <div className="h-[36px]"></div>
@@ -98,8 +183,14 @@ export function IosTimePicker({ hour, minute, onHourChange, onMinuteChange, sele
             return (
               <div 
                 key={val} 
-                className={`h-[36px] flex items-center justify-center snap-center text-lg transition-all duration-150 select-none 
-                  ${val === selectedValue ? 'font-black text-slate-800 scale-110' : 'text-slate-400 font-medium scale-90 opacity-70'}
+                onClick={() => {
+                  const idx = items.indexOf(val);
+                  if (ref.current) {
+                    ref.current.scrollTo({ top: idx * ITEM_HEIGHT, behavior: 'smooth' });
+                  }
+                }}
+                className={`h-[36px] flex items-center justify-center snap-center text-lg transition-all duration-150 select-none cursor-pointer
+                  ${val === selectedValue ? 'font-black text-slate-800 scale-110' : 'text-slate-400 font-medium scale-90 opacity-70 hover:text-slate-600 hover:opacity-100'}
                 `}
               >
                 {val}
@@ -113,7 +204,7 @@ export function IosTimePicker({ hour, minute, onHourChange, onMinuteChange, sele
   }
 
   return (
-    <div className={`flex justify-center items-center gap-4 bg-slate-100 border ${hasError ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'} rounded-2xl p-3 relative shadow-inner overflow-hidden max-w-[200px] mx-auto transition-all`}>
+    <div className={`flex justify-center items-center gap-4 bg-slate-100 border ${hasError ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'} rounded-2xl p-3 relative shadow-inner overflow-hidden max-w-[200px] mx-auto transition-all touch-none`}>
       {/* Central Highlight Bar */}
       <div className={`absolute top-1/2 left-0 w-full h-[36px] -translate-y-1/2 rounded-xl pointer-events-none border-y shadow-sm z-0 ${hasError ? 'bg-rose-100/50 border-rose-200/50' : 'bg-white/60 border-slate-200'}`}></div>
       
